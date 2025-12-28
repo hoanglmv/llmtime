@@ -58,7 +58,7 @@ def get_dataset(dsname):
     darts_ds = getattr(darts.datasets,dsname)().load()
     if dsname=='GasRateCO2Dataset':
         darts_ds = darts_ds[darts_ds.columns[1]]
-    series = darts_ds.pd_dataframe().iloc[:, 0]
+    series = darts_ds.to_dataframe().iloc[:, 0]
 
     if dsname == 'SunspotsDataset':
         series = series.iloc[::4]
