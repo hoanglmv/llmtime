@@ -1,5 +1,8 @@
 import os
 import torch
+from dotenv import load_dotenv
+load_dotenv() # <--- Thêm dòng này
+
 os.environ['OMP_NUM_THREADS'] = '4'
 import numpy as np
 import pandas as pd
@@ -7,6 +10,9 @@ import matplotlib.pyplot as plt
 import openai
 openai.api_key = os.environ['OPENAI_API_KEY']
 openai.api_base = os.environ.get("OPENAI_API_BASE", "https://api.openai.com/v1")
+
+if not openai.api_key:
+    raise ValueError("khong tim thay api Key")
 from data.serialize import SerializerSettings
 from models.utils import grid_iter
 from models.promptcast import get_promptcast_predictions_data
