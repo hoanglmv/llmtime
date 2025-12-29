@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 
 # --- 1. CẤU HÌNH ĐƯỜNG DẪN ---
 # Đường dẫn gốc project của bạn
-BASE_DIR = os.path.expanduser("/home/myvh07/hoanglmv/Project/llmtime")
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 OUTPUT_BASE_DIR = os.path.join(BASE_DIR, "output")
 
 # Danh sách dataset cần kiểm tra

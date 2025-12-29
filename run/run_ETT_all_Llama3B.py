@@ -29,7 +29,7 @@ from models.llmtime import get_llmtime_predictions_data
 
 # --- 2. CẤU HÌNH DỮ LIỆU ---
 # Hãy chắc chắn đường dẫn này đúng trên server của bạn
-BASE_DIR = os.path.expanduser("/home/myvh07/hoanglmv/Project/llmtime")
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 
 # Danh sách các dataset muốn chạy
 DATASETS_TO_RUN = {

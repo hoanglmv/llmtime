@@ -50,7 +50,7 @@ from models.llmtime import get_llmtime_predictions_data
 
 
 
-BASE_DIR = os.path.expanduser("~/dttmai/hoanglmv/llmtime")
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 
 # Đảm bảo đọc file đã làm sạch (cleaned)
 

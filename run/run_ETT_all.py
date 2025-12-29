@@ -25,7 +25,7 @@ from data.serialize import SerializerSettings
 from models.llmtime import get_llmtime_predictions_data
 
 # --- 2. CẤU HÌNH DỮ LIỆU ---
-BASE_DIR = os.path.expanduser("/home/myvh07/hoanglmv/Project/llmtime")
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 
 # Danh sách các dataset muốn chạy
 DATASETS_TO_RUN = {

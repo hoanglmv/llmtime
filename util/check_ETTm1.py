@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 # --- CẤU HÌNH ĐƯỜNG DẪN ---
-BASE_DIR = os.path.expanduser("~/dttmai/hoanglmv/llmtime")
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 OUTPUT_DIR = os.path.join(BASE_DIR, "output/ETTm1")
 RESULT_FILE = os.path.join(OUTPUT_DIR, "results_ETTm1.pkl")
 
