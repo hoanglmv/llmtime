@@ -20,7 +20,7 @@ load_dotenv()
 
 # Ép dùng GPU 1
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 os.environ['OMP_NUM_THREADS'] = '4'
 

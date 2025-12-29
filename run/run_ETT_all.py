@@ -29,9 +29,11 @@ BASE_DIR = os.path.expanduser("/home/myvh07/hoanglmv/Project/llmtime")
 
 # Danh sách các dataset muốn chạy
 DATASETS_TO_RUN = {
+    
     "ETTm1": "ETTm1.csv",
     "ETTm2": "ETTm2.csv",
-    "ETTh2": "ETTh2.csv"
+    "ETTh2": "ETTh2.csv",
+    "ETTh1": "ETTh1.csv"
 }
 
 # Cấu hình Model Llama-7B
