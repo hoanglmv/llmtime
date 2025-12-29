@@ -9,8 +9,10 @@ from dotenv import load_dotenv
 
 # --- 1. CẤU HÌNH HỆ THỐNG ---
 load_dotenv()
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0" 
 os.environ['OMP_NUM_THREADS'] = '4'
+# Chống phân mảnh bộ nhớ GPU
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 try:
     from huggingface_hub import login
@@ -34,7 +36,11 @@ DATASETS_TO_RUN = {
     "ETTh2": "ETTh2.csv"
 }
 
-# Cấu hình Model Llama-7B
+# --- CẤU HÌNH MODEL (LLAMA 3B) ---
+# Sử dụng Llama-3.2-3B của Meta. 
+# Lưu ý: Bạn cần accept license trên HuggingFace cho model này nếu chưa làm.
+MODEL_NAME = 'meta-llama/Llama-3.2-3B' 
+
 llama_hypers = dict(
     temp=0.7,
     alpha=0.95,
@@ -79,7 +85,7 @@ def load_and_clean_data(file_path):
             # Ép kiểu số, biến lỗi (như chữ text) thành NaN
             df[col] = pd.to_numeric(df[col], errors='coerce')
             
-            # --- LOGIC MỚI: FILL TOÀN BỘ, KHÔNG XÓA ---
+            # --- LOGIC FILL TOÀN BỘ, KHÔNG XÓA ---
             # Đếm NaN và 0 để báo cáo
             count_nan = df[col].isna().sum()
             count_zero = (df[col] == 0).sum()
@@ -98,7 +104,6 @@ def load_and_clean_data(file_path):
             valid_cols.append(col)
     
     # 3. Sort lại theo thời gian
-    # Lưu ý: Vì đã fill hết NaT nên sort sẽ ổn định
     if 'date' in df.columns:
         df = df.sort_values(by='date').reset_index(drop=True)
     
@@ -107,6 +112,8 @@ def load_and_clean_data(file_path):
 
 # --- 4. HÀM CHẠY DỰ BÁO ---
 def run_all_datasets():
+    print(f"ℹ️ Đang chạy với Model: {MODEL_NAME}")
+    
     for ds_name, file_name in DATASETS_TO_RUN.items():
         print(f"\n" + "#"*60)
         print(f"🚀 BẮT ĐẦU XỬ LÝ DATASET: {ds_name}")
@@ -115,7 +122,9 @@ def run_all_datasets():
         # Đường dẫn file
         input_path = os.path.join(BASE_DIR, "datasets/ETT-small", file_name)
         output_dir = os.path.join(BASE_DIR, f"output/{ds_name}")
-        output_file = os.path.join(output_dir, f"results_{ds_name}.pkl")
+        
+        # [QUAN TRỌNG] Đổi tên file kết quả để không đè lên file 7B cũ
+        output_file = os.path.join(output_dir, f"results_{ds_name}_Llama3B.pkl")
         
         if not os.path.exists(input_path):
             print(f"❌ Không tìm thấy file: {input_path}. Bỏ qua.")
@@ -150,10 +159,10 @@ def run_all_datasets():
             test = series.iloc[-test_size:]
             
             try:
-                # Gọi Model
+                # Gọi Model 3B
                 pred_dict = get_llmtime_predictions_data(
                     train, test, 
-                    model='llama-7b',
+                    model=MODEL_NAME,   # <--- Dùng Llama 3B
                     num_samples=10,
                     **llama_hypers 
                 )
@@ -173,9 +182,9 @@ def run_all_datasets():
         # Lưu kết quả
         with open(output_file, 'wb') as f:
             pickle.dump(ds_results, f)
-        print(f"\n💾 Đã lưu kết quả {ds_name} vào: {output_file}")
+        print(f"\n💾 Đã lưu kết quả {ds_name} (Llama 3B) vào: {output_file}")
 
-    print("\n🎉🎉🎉 HOÀN TẤT TOÀN BỘ QUÁ TRÌNH! 🎉🎉🎉")
+    print("\n🎉🎉🎉 HOÀN TẤT TOÀN BỘ QUÁ TRÌNH VỚI MODEL 3B! 🎉🎉🎉")
 
 if __name__ == "__main__":
     run_all_datasets()
