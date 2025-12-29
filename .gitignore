@@ -2,9 +2,6 @@
 outputs/
 datasets/
 *.pyc
-
-output/
-.ipynb_checkpoints/
 output/
 .ipynb_checkpoints/
 __pycache__/
