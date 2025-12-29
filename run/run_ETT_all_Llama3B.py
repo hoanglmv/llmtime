@@ -9,9 +9,10 @@ from dotenv import load_dotenv
 
 # --- 1. CẤU HÌNH HỆ THỐNG ---
 load_dotenv()
+# Chọn GPU muốn chạy (0 hoặc 1 tùy tình trạng server)
 os.environ["CUDA_VISIBLE_DEVICES"] = "0" 
 os.environ['OMP_NUM_THREADS'] = '4'
-# Chống phân mảnh bộ nhớ GPU
+# Chống phân mảnh bộ nhớ GPU (Rất quan trọng để tránh OOM)
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 try:
@@ -27,6 +28,7 @@ from data.serialize import SerializerSettings
 from models.llmtime import get_llmtime_predictions_data
 
 # --- 2. CẤU HÌNH DỮ LIỆU ---
+# Hãy chắc chắn đường dẫn này đúng trên server của bạn
 BASE_DIR = os.path.expanduser("/home/myvh07/hoanglmv/Project/llmtime")
 
 # Danh sách các dataset muốn chạy
@@ -37,8 +39,7 @@ DATASETS_TO_RUN = {
 }
 
 # --- CẤU HÌNH MODEL (LLAMA 3B) ---
-# Sử dụng Llama-3.2-3B của Meta. 
-# Lưu ý: Bạn cần accept license trên HuggingFace cho model này nếu chưa làm.
+# Model Llama 3.2 3B (Cần update transformers mới nhất để chạy)
 MODEL_NAME = 'meta-llama/Llama-3.2-3B' 
 
 llama_hypers = dict(
@@ -177,6 +178,9 @@ def run_all_datasets():
 
             except Exception as e:
                 print(f"   ❌ Lỗi cột {col}: {e}")
+                # In chi tiết lỗi để debug nếu transformers chưa update
+                import traceback
+                traceback.print_exc()
                 torch.cuda.empty_cache()
 
         # Lưu kết quả
