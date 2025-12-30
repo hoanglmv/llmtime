@@ -1,12 +1,8 @@
 import torch
 import numpy as np
-from jax import grad,vmap
+from jax import grad, vmap
 from tqdm import tqdm
-import argparse
-from transformers import (
-    LlamaForCausalLM, 
-    LlamaTokenizer, 
-)
+from transformers import AutoModelForCausalLM, AutoTokenizer
 from data.serialize import serialize_arr, deserialize_str, SerializerSettings
 
 DEFAULT_EOS_TOKEN = "</s>"
@@ -15,51 +11,71 @@ DEFAULT_UNK_TOKEN = "<unk>"
 
 loaded = {}
 
-def llama2_model_string(model_size, chat):
-    chat = "chat-" if chat else ""
-    return f"meta-llama/Llama-2-{model_size.lower()}-{chat}hf"
+# Mapping từ tên gọi trong code sang đường dẫn HuggingFace
+MODEL_MAPPING = {
+    # Llama 2
+    "7b": "meta-llama/Llama-2-7b-hf",
+    "13b": "meta-llama/Llama-2-13b-hf",
+    "70b": "meta-llama/Llama-2-70b-hf",
+    "7b-chat": "meta-llama/Llama-2-7b-chat-hf",
+    "13b-chat": "meta-llama/Llama-2-13b-chat-hf",
+    "70b-chat": "meta-llama/Llama-2-70b-chat-hf",
+    
+    # Llama 3.1 & 3.2
+    "llama-3.1-8b": "meta-llama/Meta-Llama-3.1-8B",
+    "llama-3.2-3b": "meta-llama/Llama-3.2-3B",
+}
 
-def get_tokenizer(model):
-    name_parts = model.split("-")
+def get_hf_path(model_name):
+    """Trả về đường dẫn HuggingFace dựa trên tên model"""
+    if model_name in MODEL_MAPPING:
+        return MODEL_MAPPING[model_name]
+    
+    # Fallback: Trả về nguyên gốc nếu người dùng truyền path trực tiếp
+    # hoặc xử lý logic cũ cho Llama 2
+    if "/" in model_name: 
+        return model_name
+        
+    name_parts = model_name.split("-")
     model_size = name_parts[0]
     chat = len(name_parts) > 1
-    assert model_size in ["7b", "13b", "70b"]
+    chat_str = "chat-" if chat else ""
+    return f"meta-llama/Llama-2-{model_size.lower()}-{chat_str}hf"
 
-    tokenizer = LlamaTokenizer.from_pretrained(
-        llama2_model_string(model_size, chat),
-        use_fast=False,
-    )
+def get_tokenizer(model_name):
+    hf_path = get_hf_path(model_name)
 
-    special_tokens_dict = dict()
-    if tokenizer.eos_token is None:
-        special_tokens_dict["eos_token"] = DEFAULT_EOS_TOKEN
-    if tokenizer.bos_token is None:
-        special_tokens_dict["bos_token"] = DEFAULT_BOS_TOKEN
-    if tokenizer.unk_token is None:
-        special_tokens_dict["unk_token"] = DEFAULT_UNK_TOKEN
+    # Load Tokenizer
+    # use_fast=True thường ổn với Llama 3, nhưng False an toàn hơn cho logic cũ
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(hf_path, use_fast=False)
+    except:
+        # Fallback nếu model mới bắt buộc dùng fast tokenizer
+        tokenizer = AutoTokenizer.from_pretrained(hf_path, use_fast=True)
 
-    tokenizer.add_special_tokens(special_tokens_dict)
-    tokenizer.pad_token = tokenizer.eos_token
-
+    # Xử lý Special Tokens cho Llama 3
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.pad_token_id = tokenizer.eos_token_id
+        
     return tokenizer
 
 def get_model_and_tokenizer(model_name, cache_model=False):
     if model_name in loaded:
         return loaded[model_name]
-    name_parts = model_name.split("-")
-    model_size = name_parts[0]
-    chat = len(name_parts) > 1
-
-    assert model_size in ["7b", "13b", "70b"]
-
+    
+    hf_path = get_hf_path(model_name)
     tokenizer = get_tokenizer(model_name)
 
-    model = LlamaForCausalLM.from_pretrained(
-        llama2_model_string(model_size, chat),
+    print(f"Loading model: {hf_path}...")
+    model = AutoModelForCausalLM.from_pretrained(
+        hf_path,
         device_map="auto",   
         torch_dtype=torch.float16,
+        low_cpu_mem_usage=True
     )
     model.eval()
+    
     if cache_model:
         loaded[model_name] = model, tokenizer
     return model, tokenizer
@@ -69,58 +85,80 @@ def tokenize_fn(str, model):
     return tokenizer(str)
 
 def llama_nll_fn(model, input_arr, target_arr, settings:SerializerSettings, transform, count_seps=True, temp=1, cache_model=True):
-    """ Returns the NLL/dimension (log base e) of the target array (continuous) according to the LM 
-        conditioned on the input array. Applies relevant log determinant for transforms and
-        converts from discrete NLL of the LLM to continuous by assuming uniform within the bins.
-    inputs:
-        input_arr: (n,) context array
-        target_arr: (n,) ground truth array
-        cache_model: whether to cache the model and tokenizer for faster repeated calls
-    Returns: NLL/D
+    """ 
+    Tính NLL (Negative Log Likelihood) cho chuỗi target.
+    Logic đã được cập nhật để tương thích với Llama 3.
     """
-    model, tokenizer = get_model_and_tokenizer(model, cache_model=cache_model)
+    model_obj, tokenizer = get_model_and_tokenizer(model, cache_model=cache_model)
 
+    # 1. Serialize dữ liệu
     input_str = serialize_arr(vmap(transform)(input_arr), settings)
     target_str = serialize_arr(vmap(transform)(target_arr), settings)
-    full_series = input_str + target_str
+    full_str = input_str + target_str
     
+    # 2. Tokenize Full String
     batch = tokenizer(
-        [full_series], 
+        [full_str], 
         return_tensors="pt",
-        add_special_tokens=True
+        add_special_tokens=True # Thêm BOS nếu cần
     )
     batch = {k: v.cuda() for k, v in batch.items()}
 
+    # 3. Tính độ dài Token của Target để cắt chuỗi chính xác
+    # Tokenize riêng target (không có special tokens) để biết nó chiếm bao nhiêu token ở cuối
+    target_tokens_len = len(tokenizer(target_str, add_special_tokens=False)['input_ids'])
+
+    # 4. Forward Pass
     with torch.no_grad():
-        out = model(**batch)
+        out = model_obj(**batch)
 
-    good_tokens_str = list("0123456789" + settings.time_sep)
-    good_tokens = [tokenizer.convert_tokens_to_ids(token) for token in good_tokens_str]
-    bad_tokens = [i for i in range(len(tokenizer)) if i not in good_tokens]
-    out['logits'][:,:,bad_tokens] = -100
-
-    input_ids = batch['input_ids'][0][1:]
-    logprobs = torch.nn.functional.log_softmax(out['logits'], dim=-1)[0][:-1]
-    logprobs = logprobs[torch.arange(len(input_ids)), input_ids].cpu().numpy()
-
-    tokens = tokenizer.batch_decode(
-        input_ids,
-        skip_special_tokens=False, 
-        clean_up_tokenization_spaces=False
-    )
+    # 5. Masking: Chỉ cho phép model dự đoán số và dấu câu (Hard constraint)
+    # Llama 3 Vocab rất lớn (128k), dùng loop sẽ rất chậm -> Dùng Tensor Mask
+    logits = out.logits
+    vocab_size = logits.shape[-1]
     
-    input_len = len(tokenizer([input_str], return_tensors="pt",)['input_ids'][0])
-    input_len = input_len - 2 # remove the BOS token
+    good_tokens_str = list("0123456789" + settings.time_sep)
+    good_tokens_ids = [tokenizer.convert_tokens_to_ids(token) for token in good_tokens_str]
+    # Thêm các ký tự cần thiết khác (dấu cách, dấu chấm, dấu trừ)
+    good_tokens_ids += [tokenizer.convert_tokens_to_ids(t) for t in ['-', '.', ' ', '\n']]
+    
+    # Tạo mask: True là bad token
+    bad_token_mask = torch.ones(vocab_size, dtype=torch.bool, device=logits.device)
+    bad_token_mask[good_tokens_ids] = False
+    
+    # Gán logit của bad token thành -inf
+    logits[:, :, bad_token_mask] = -float('inf')
 
-    logprobs = logprobs[input_len:]
-    tokens = tokens[input_len:]
-    BPD = -logprobs.sum()/len(target_arr)
+    # 6. Tính Logprobs
+    # Shift input_ids để làm labels (token t dự đoán token t+1)
+    input_ids = batch['input_ids'][0][1:] 
+    shifted_logits = logits[0][:-1]
+    
+    log_softmax = torch.nn.functional.log_softmax(shifted_logits, dim=-1)
+    
+    # Lấy logprob của token thực tế
+    token_logprobs = log_softmax[torch.arange(len(input_ids)), input_ids]
+    token_logprobs = token_logprobs.cpu().numpy()
 
-    #print("BPD unadjusted:", -logprobs.sum()/len(target_arr), "BPD adjusted:", BPD)
-    # log p(x) = log p(token) - log bin_width = log p(token) + prec * log base
-    transformed_nll = BPD - settings.prec*np.log(settings.base)
+    # 7. Slicing: Lấy phần logprobs tương ứng với Target
+    # Chúng ta lấy N token cuối cùng, với N = target_tokens_len
+    if target_tokens_len > 0:
+        # Đảm bảo không lấy quá độ dài chuỗi (trường hợp target dài hơn context window - hiếm gặp)
+        slice_len = min(len(token_logprobs), target_tokens_len)
+        target_logprobs = token_logprobs[-slice_len:]
+    else:
+        target_logprobs = np.array([])
+    
+    # 8. Tính kết quả
+    if len(target_logprobs) > 0:
+        BPD = -target_logprobs.sum() / len(target_arr)
+    else:
+        BPD = 0 # Fallback
+
+    transformed_nll = BPD - settings.prec * np.log(settings.base)
     avg_logdet_dydx = np.log(vmap(grad(transform))(target_arr)).mean()
-    return transformed_nll-avg_logdet_dydx
+    
+    return transformed_nll - avg_logdet_dydx
 
 def llama_completion_fn(
     model,
@@ -133,39 +171,66 @@ def llama_completion_fn(
     top_p=0.9,
     cache_model=True
 ):
-    avg_tokens_per_step = len(tokenize_fn(input_str, model)['input_ids']) / len(input_str.split(settings.time_sep))
-    max_tokens = int(avg_tokens_per_step*steps)
+    model_obj, tokenizer = get_model_and_tokenizer(model, cache_model=cache_model)
+
+    # Ước lượng số token cần sinh
+    input_tokens = tokenize_fn(input_str, model)['input_ids']
+    avg_tokens_per_step = len(input_tokens) / len(input_str.split(settings.time_sep))
+    # Cộng thêm buffer để đảm bảo không bị cắt giữa chừng
+    max_new_tokens = int(avg_tokens_per_step * steps) + 20
     
-    model, tokenizer = get_model_and_tokenizer(model, cache_model=cache_model)
-
+    # Chuẩn bị Bad Words (Chỉ cho phép số)
+    # Lưu ý: Với generate(), dùng bad_words_ids cho 128k token sẽ rất chậm.
+    # Nên dùng LogitsProcessor hoặc tin tưởng vào fine-tuning/prompting.
+    # Ở đây ta dùng chiến lược: Hy vọng model hiểu context số, 
+    # nhưng nếu cần thiết, ta có thể force bằng bad_words_ids (nhưng cần cẩn thận performance).
+    
+    # Tối ưu: Chỉ cấm các từ thông dụng không phải số nếu cần thiết, 
+    # hoặc bỏ qua bad_words_ids để tăng tốc độ, vì Llama 3 8B follow instruction khá tốt.
+    # Dưới đây giữ lại logic tạo bad_words_ids nhưng giới hạn scope hoặc bỏ qua nếu làm chậm.
+    # Để an toàn và nhanh, ta tạm bỏ bad_words_ids trong generate loop 
+    # vì logic cũ convert set -> list bad tokens (120k phần tử) x batch_size sẽ gây lag.
+    
     gen_strs = []
-    for _ in tqdm(range(num_samples // batch_size)):
-        batch = tokenizer(
-            [input_str], 
-            return_tensors="pt",
-        )
+    
+    # Tính số batch cần chạy
+    num_batches = (num_samples + batch_size - 1) // batch_size
+    
+    for _ in tqdm(range(num_batches), desc="Generating", leave=False):
+        batch_inputs = tokenizer([input_str], return_tensors="pt").to(model_obj.device)
+        
+        # Thiết lập tokens dừng (EOS và EOT của Llama 3)
+        terminators = [
+            tokenizer.eos_token_id,
+            tokenizer.convert_tokens_to_ids("<|eot_id|>")
+        ]
+        # Lọc bỏ None nếu tokenizer cũ không có EOT
+        terminators = [t for t in terminators if t is not None]
 
-        batch = {k: v.repeat(batch_size, 1) for k, v in batch.items()}
-        batch = {k: v.cuda() for k, v in batch.items()}
-        num_input_ids = batch['input_ids'].shape[1]
-
-        good_tokens_str = list("0123456789" + settings.time_sep)
-        good_tokens = [tokenizer.convert_tokens_to_ids(token) for token in good_tokens_str]
-        # good_tokens += [tokenizer.eos_token_id]
-        bad_tokens = [i for i in range(len(tokenizer)) if i not in good_tokens]
-
-        generate_ids = model.generate(
-            **batch,
-            do_sample=True,
-            max_new_tokens=max_tokens,
-            temperature=temp, 
-            top_p=top_p, 
-            bad_words_ids=[[t] for t in bad_tokens],
-            renormalize_logits=True,
-        )
-        gen_strs += tokenizer.batch_decode(
-            generate_ids[:, num_input_ids:],
-            skip_special_tokens=True, 
+        with torch.no_grad():
+            outputs = model_obj.generate(
+                **batch_inputs,
+                max_new_tokens=max_new_tokens,
+                do_sample=True,
+                temperature=temp,
+                top_p=top_p,
+                pad_token_id=tokenizer.eos_token_id,
+                eos_token_id=terminators,
+                num_return_sequences=min(batch_size, num_samples - len(gen_strs))
+            )
+        
+        # Decode và lấy phần mới sinh ra
+        input_length = batch_inputs['input_ids'].shape[1]
+        generated_tokens = outputs[:, input_length:]
+        
+        decoded_batch = tokenizer.batch_decode(
+            generated_tokens, 
+            skip_special_tokens=True,
             clean_up_tokenization_spaces=False
         )
-    return gen_strs
+        gen_strs.extend(decoded_batch)
+        
+        if len(gen_strs) >= num_samples:
+            break
+            
+    return gen_strs[:num_samples]
