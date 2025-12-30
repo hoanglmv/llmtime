@@ -5,15 +5,14 @@ import numpy as np
 import pickle
 import torch
 import gc
-from functools import partial
 from dotenv import load_dotenv
 
 # --- 1. CẤU HÌNH HỆ THỐNG ---
 load_dotenv()
-# Chọn GPU (0 hoặc 1 tùy server của bạn)
-os.environ["CUDA_VISIBLE_DEVICES"] = "0" 
+# Chọn GPU (0 hoặc 1)
+os.environ["CUDA_VISIBLE_DEVICES"] = "1" 
 os.environ['OMP_NUM_THREADS'] = '4'
-# Chống phân mảnh bộ nhớ GPU (Rất quan trọng)
+# Chống phân mảnh bộ nhớ GPU (Rất quan trọng cho model 8B)
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 try:
@@ -25,39 +24,11 @@ except: pass
 # Thêm đường dẫn project
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-# Import các module cốt lõi
 from data.serialize import SerializerSettings
 from models.llmtime import get_llmtime_predictions_data
-from models.llms import completion_fns, context_lengths, tokenization_fns
-from models.llama import llama_completion_fn, tokenize_fn as llama_tokenize_fn
-
-# ==============================================================================
-# 🛠️ CẤU HÌNH MODEL (RUNTIME INJECTION)
-# ==============================================================================
-# Tại đây chúng ta tự định nghĩa model Llama-3.1-8B để không phải sửa file gốc
-# ------------------------------------------------------------------------------
-# Tên model trên HuggingFace (Bạn nên dùng bản 8B này thay vì 3B vì nó thông minh hơn nhiều)
-REAL_MODEL_PATH = "meta-llama/Meta-Llama-3.1-8B"
-# Key định danh nội bộ
-MY_CUSTOM_KEY = "custom-llama-3.1-8b"
-
-print(f"🛠️ Đang đăng ký model: {REAL_MODEL_PATH}...")
-
-# 1. Đăng ký hàm dự đoán
-completion_fns[MY_CUSTOM_KEY] = partial(llama_completion_fn, model=REAL_MODEL_PATH)
-
-# 2. Đăng ký độ dài ngữ cảnh (Llama 3.1 hỗ trợ 128k, ta set 16k là quá đủ và nhẹ)
-context_lengths[MY_CUSTOM_KEY] = 16000 
-
-# 3. Đăng ký hàm tokenize
-tokenization_fns[MY_CUSTOM_KEY] = partial(llama_tokenize_fn, model=REAL_MODEL_PATH)
-
-print("✅ Đăng ký thành công!")
-
-# ==============================================================================
 
 # --- 2. CẤU HÌNH DỮ LIỆU ---
-BASE_DIR = os.path.expanduser("/home/myvh07/hoanglmv/Project/llmtime")
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 
 DATASETS_TO_RUN = {
     "ETTm1": "ETTm1.csv",
@@ -65,6 +36,11 @@ DATASETS_TO_RUN = {
     "ETTh1": "ETTh1.csv",
     "ETTh2": "ETTh2.csv"
 }
+
+# --- 3. CẤU HÌNH MODEL ---
+# [QUAN TRỌNG] Dùng đúng KEY đã khai báo trong models/llms.py
+# Code đã clean hơn, không cần inject thủ công nữa
+MODEL_NAME = 'llama-3.1-8b' 
 
 llama_hypers = dict(
     temp=0.7,
@@ -74,22 +50,22 @@ llama_hypers = dict(
     settings=SerializerSettings(base=10, prec=2, signed=True, half_bin_correction=True)
 )
 
-# --- 3. HÀM LÀM SẠCH DỮ LIỆU (KHÔNG XÓA DÒNG) ---
+# --- 4. HÀM LÀM SẠCH DỮ LIỆU ---
 def load_and_clean_data(file_path):
     print(f"   📖 Đang đọc và xử lý: {file_path}")
     df = pd.read_csv(file_path, low_memory=False)
     
-    # Xử lý Date
+    # 1. Xử lý Date
     if 'date' in df.columns:
         df['date'] = pd.to_datetime(df['date'], errors='coerce')
         if df['date'].isna().sum() > 0:
-            print(f"      ⚠️ Sửa lỗi ngày tháng (NaT) bằng ffill/bfill...")
+            print(f"      ⚠️ Sửa lỗi ngày tháng (NaT)...")
             df['date'] = df['date'].ffill().bfill()
     
-    # Xử lý Số liệu
+    # 2. Xử lý Số liệu
     target_cols = ['HUFL', 'HULL', 'MUFL', 'MULL', 'LUFL', 'LULL', 'OT']
     valid_cols = []
-    EPSILON = 1e-5
+    EPSILON = 1e-5 
     
     for col in target_cols:
         if col in df.columns:
@@ -112,9 +88,9 @@ def load_and_clean_data(file_path):
     print(f"   ✅ Dữ liệu sẵn sàng: {len(df)} dòng.")
     return df, valid_cols
 
-# --- 4. HÀM CHẠY DỰ BÁO ---
+# --- 5. HÀM CHẠY DỰ BÁO ---
 def run_all_datasets():
-    print(f"\nℹ️ Đang chạy với Model Key: {MY_CUSTOM_KEY}")
+    print(f"ℹ️ Đang chạy với Model Key: {MODEL_NAME}")
     
     for ds_name, file_name in DATASETS_TO_RUN.items():
         print(f"\n" + "#"*60)
@@ -124,30 +100,30 @@ def run_all_datasets():
         input_path = os.path.join(BASE_DIR, "datasets/ETT-small", file_name)
         output_dir = os.path.join(BASE_DIR, f"output/{ds_name}")
         
-        # Đổi tên file output để nhận diện model
-        output_file = os.path.join(output_dir, f"results_{ds_name}_Llama3.1-8B.pkl")
+        # Tên file kết quả
+        output_file = os.path.join(output_dir, f"results_{ds_name}_{MODEL_NAME}.pkl")
         
         if not os.path.exists(input_path):
             print(f"❌ Không tìm thấy: {input_path}")
             continue
-        
+            
         os.makedirs(output_dir, exist_ok=True)
         
-        # Load dữ liệu
         df, target_cols = load_and_clean_data(input_path)
         ds_results = {}
         
         for col in target_cols:
             print(f"\n--- 🔄 {ds_name} | Cột: {col} ---")
             
-            # Dọn dẹp GPU triệt để
+            # Clear RAM/VRAM triệt để cho model lớn
             torch.cuda.empty_cache()
             gc.collect()
 
             series = df[col]
             
-            # Cấu hình Context Window
-            # Vì Llama 3.1 nhớ tốt, ta có thể tăng limit_size lên nếu muốn (ví dụ 3000)
+            # Cấu hình Context
+            # Llama 3.1 8B mạnh hơn, có thể nhớ context dài hơn nếu VRAM cho phép (ví dụ 3000)
+            # Tuy nhiên để an toàn, ta giữ 2000
             limit_size = 2000 
             test_size = 100
             
@@ -160,7 +136,7 @@ def run_all_datasets():
             try:
                 pred_dict = get_llmtime_predictions_data(
                     train, test, 
-                    model=MY_CUSTOM_KEY,   # <--- Dùng Key tự define ở trên
+                    model=MODEL_NAME, 
                     num_samples=10,
                     **llama_hypers 
                 )
@@ -177,7 +153,6 @@ def run_all_datasets():
                 print(f"   ❌ Lỗi cột {col}: {e}")
                 import traceback
                 traceback.print_exc()
-                torch.cuda.empty_cache()
 
         with open(output_file, 'wb') as f:
             pickle.dump(ds_results, f)
