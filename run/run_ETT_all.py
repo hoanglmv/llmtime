@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 
 # --- 1. CẤU HÌNH HỆ THỐNG ---
 load_dotenv()
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 os.environ['OMP_NUM_THREADS'] = '4'
 
 try:
