@@ -10,7 +10,7 @@ from dotenv import load_dotenv # type: ignore
 # --- 1. CẤU HÌNH HỆ THỐNG ---
 load_dotenv()
 # Chọn GPU (0 hoặc 1)
-os.environ["CUDA_VISIBLE_DEVICES"] = "1" 
+os.environ["CUDA_VISIBLE_DEVICES"] = "0" 
 os.environ['OMP_NUM_THREADS'] = '4'
 # Chống phân mảnh bộ nhớ GPU (Rất quan trọng)
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
