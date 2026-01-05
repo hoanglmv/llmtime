@@ -32,7 +32,6 @@ def get_hf_path(model_name):
         return MODEL_MAPPING[model_name]
     
     # Fallback: Trả về nguyên gốc nếu người dùng truyền path trực tiếp
-    # hoặc xử lý logic cũ cho Llama 2
     if "/" in model_name: 
         return model_name
         
@@ -46,7 +45,6 @@ def get_tokenizer(model_name):
     hf_path = get_hf_path(model_name)
 
     # Load Tokenizer
-    # use_fast=True thường ổn với Llama 3, nhưng False an toàn hơn cho logic cũ
     try:
         tokenizer = AutoTokenizer.from_pretrained(hf_path, use_fast=False)
     except:
@@ -87,7 +85,7 @@ def tokenize_fn(str, model):
 def llama_nll_fn(model, input_arr, target_arr, settings:SerializerSettings, transform, count_seps=True, temp=1, cache_model=True):
     """ 
     Tính NLL (Negative Log Likelihood) cho chuỗi target.
-    Logic đã được cập nhật để tương thích với Llama 3.
+    Logic đã được cập nhật để tương thích với Llama 3 và sửa lỗi Index Masking.
     """
     model_obj, tokenizer = get_model_and_tokenizer(model, cache_model=cache_model)
 
@@ -100,50 +98,56 @@ def llama_nll_fn(model, input_arr, target_arr, settings:SerializerSettings, tran
     batch = tokenizer(
         [full_str], 
         return_tensors="pt",
-        add_special_tokens=True # Thêm BOS nếu cần
+        add_special_tokens=True 
     )
     batch = {k: v.cuda() for k, v in batch.items()}
 
-    # 3. Tính độ dài Token của Target để cắt chuỗi chính xác
-    # Tokenize riêng target (không có special tokens) để biết nó chiếm bao nhiêu token ở cuối
+    # 3. Tính độ dài Token của Target
     target_tokens_len = len(tokenizer(target_str, add_special_tokens=False)['input_ids'])
 
     # 4. Forward Pass
     with torch.no_grad():
         out = model_obj(**batch)
 
-    # 5. Masking: Chỉ cho phép model dự đoán số và dấu câu (Hard constraint)
-    # Llama 3 Vocab rất lớn (128k), dùng loop sẽ rất chậm -> Dùng Tensor Mask
+    # 5. Masking (ĐÃ SỬA LỖI INDEX)
     logits = out.logits
     vocab_size = logits.shape[-1]
     
-    good_tokens_str = list("0123456789" + settings.time_sep)
-    good_tokens_ids = [tokenizer.convert_tokens_to_ids(token) for token in good_tokens_str]
-    # Thêm các ký tự cần thiết khác (dấu cách, dấu chấm, dấu trừ)
-    good_tokens_ids += [tokenizer.convert_tokens_to_ids(t) for t in ['-', '.', ' ', '\n']]
+    # Danh sách các ký tự cho phép
+    tokens_to_allow = list("0123456789" + settings.time_sep) + ['-', '.', ' ', '\n']
+    
+    good_tokens_ids = []
+    for token in tokens_to_allow:
+        tid = tokenizer.convert_tokens_to_ids(token)
+        # Fix: Đảm bảo tid luôn là int, nếu là list thì lấy phần tử đầu
+        if isinstance(tid, int):
+            good_tokens_ids.append(tid)
+        elif isinstance(tid, list) and len(tid) > 0:
+            good_tokens_ids.append(tid[0])
+            
+    # Loại bỏ trùng lặp và convert sang Tensor để tránh lỗi index
+    good_tokens_ids = list(set(good_tokens_ids))
+    good_tokens_tensor = torch.tensor(good_tokens_ids, dtype=torch.long, device=logits.device)
     
     # Tạo mask: True là bad token
     bad_token_mask = torch.ones(vocab_size, dtype=torch.bool, device=logits.device)
-    bad_token_mask[good_tokens_ids] = False
+    # Dùng Tensor để index, đảm bảo an toàn tuyệt đối
+    bad_token_mask[good_tokens_tensor] = False
     
     # Gán logit của bad token thành -inf
     logits[:, :, bad_token_mask] = -float('inf')
 
     # 6. Tính Logprobs
-    # Shift input_ids để làm labels (token t dự đoán token t+1)
     input_ids = batch['input_ids'][0][1:] 
     shifted_logits = logits[0][:-1]
     
     log_softmax = torch.nn.functional.log_softmax(shifted_logits, dim=-1)
     
-    # Lấy logprob của token thực tế
     token_logprobs = log_softmax[torch.arange(len(input_ids)), input_ids]
     token_logprobs = token_logprobs.cpu().numpy()
 
-    # 7. Slicing: Lấy phần logprobs tương ứng với Target
-    # Chúng ta lấy N token cuối cùng, với N = target_tokens_len
+    # 7. Slicing
     if target_tokens_len > 0:
-        # Đảm bảo không lấy quá độ dài chuỗi (trường hợp target dài hơn context window - hiếm gặp)
         slice_len = min(len(token_logprobs), target_tokens_len)
         target_logprobs = token_logprobs[-slice_len:]
     else:
@@ -153,7 +157,7 @@ def llama_nll_fn(model, input_arr, target_arr, settings:SerializerSettings, tran
     if len(target_logprobs) > 0:
         BPD = -target_logprobs.sum() / len(target_arr)
     else:
-        BPD = 0 # Fallback
+        BPD = 0 
 
     transformed_nll = BPD - settings.prec * np.log(settings.base)
     avg_logdet_dydx = np.log(vmap(grad(transform))(target_arr)).mean()
@@ -176,36 +180,19 @@ def llama_completion_fn(
     # Ước lượng số token cần sinh
     input_tokens = tokenize_fn(input_str, model)['input_ids']
     avg_tokens_per_step = len(input_tokens) / len(input_str.split(settings.time_sep))
-    # Cộng thêm buffer để đảm bảo không bị cắt giữa chừng
     max_new_tokens = int(avg_tokens_per_step * steps) + 20
     
-    # Chuẩn bị Bad Words (Chỉ cho phép số)
-    # Lưu ý: Với generate(), dùng bad_words_ids cho 128k token sẽ rất chậm.
-    # Nên dùng LogitsProcessor hoặc tin tưởng vào fine-tuning/prompting.
-    # Ở đây ta dùng chiến lược: Hy vọng model hiểu context số, 
-    # nhưng nếu cần thiết, ta có thể force bằng bad_words_ids (nhưng cần cẩn thận performance).
-    
-    # Tối ưu: Chỉ cấm các từ thông dụng không phải số nếu cần thiết, 
-    # hoặc bỏ qua bad_words_ids để tăng tốc độ, vì Llama 3 8B follow instruction khá tốt.
-    # Dưới đây giữ lại logic tạo bad_words_ids nhưng giới hạn scope hoặc bỏ qua nếu làm chậm.
-    # Để an toàn và nhanh, ta tạm bỏ bad_words_ids trong generate loop 
-    # vì logic cũ convert set -> list bad tokens (120k phần tử) x batch_size sẽ gây lag.
-    
     gen_strs = []
-    
-    # Tính số batch cần chạy
     num_batches = (num_samples + batch_size - 1) // batch_size
     
     for _ in tqdm(range(num_batches), desc="Generating", leave=False):
         batch_inputs = tokenizer([input_str], return_tensors="pt").to(model_obj.device)
         
-        # Thiết lập tokens dừng (EOS và EOT của Llama 3)
         terminators = [
             tokenizer.eos_token_id,
             tokenizer.convert_tokens_to_ids("<|eot_id|>")
         ]
-        # Lọc bỏ None nếu tokenizer cũ không có EOT
-        terminators = [t for t in terminators if t is not None]
+        terminators = [t for t in terminators if isinstance(t, int)]
 
         with torch.no_grad():
             outputs = model_obj.generate(
@@ -219,7 +206,6 @@ def llama_completion_fn(
                 num_return_sequences=min(batch_size, num_samples - len(gen_strs))
             )
         
-        # Decode và lấy phần mới sinh ra
         input_length = batch_inputs['input_ids'].shape[1]
         generated_tokens = outputs[:, input_length:]
         
